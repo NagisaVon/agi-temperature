@@ -12,6 +12,7 @@ describe('/api/health', () => {
 	it('returns 200 with status payload on empty DB', async () => {
 		const res = await SELF.fetch('https://example.com/api/health');
 		expect(res.status).toBe(200);
+		expect(res.headers.get('access-control-allow-origin')).toBe('*');
 		const body = (await res.json()) as {
 			status: string;
 			last_recorded_at: number | null;
@@ -20,5 +21,12 @@ describe('/api/health', () => {
 		expect(body.status).toBe('ok');
 		expect(body.row_count).toBe(0);
 		expect(body.last_recorded_at).toBeNull();
+	});
+
+	it('responds to CORS preflight with 204 and CORS headers', async () => {
+		const res = await SELF.fetch('https://example.com/api/health', { method: 'OPTIONS' });
+		expect(res.status).toBe(204);
+		expect(res.headers.get('access-control-allow-origin')).toBe('*');
+		expect(res.headers.get('access-control-allow-methods')).toContain('GET');
 	});
 });
