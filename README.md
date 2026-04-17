@@ -1,2 +1,2 @@
 # agi-temperature
-Can feel the AGI tonight
+Can you feel the AGI tonight
