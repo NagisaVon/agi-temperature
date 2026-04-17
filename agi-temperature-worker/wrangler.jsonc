@@ -23,7 +23,7 @@
 		{
 			"binding": "DB",
 			"database_name": "agi-temperature",
-			"database_id": "REPLACE_WITH_PROD_D1_ID",
+			"database_id": "f19bb591-1e17-43ed-a5ae-aff1df80b498",
 			"migrations_dir": "migrations"
 		}
 	],
@@ -37,7 +37,7 @@
 				{
 					"binding": "DB",
 					"database_name": "agi-temperature-preview",
-					"database_id": "REPLACE_WITH_PREVIEW_D1_ID",
+					"database_id": "a9c64874-bdca-41e3-bd32-e8e214d3885e",
 					"migrations_dir": "migrations"
 				}
 			]
