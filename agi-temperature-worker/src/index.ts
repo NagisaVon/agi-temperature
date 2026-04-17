@@ -6,19 +6,35 @@
  *              and (later) an external uptime check.
  */
 
+const CORS_HEADERS: Record<string, string> = {
+	'access-control-allow-origin': '*',
+	'access-control-allow-methods': 'GET, OPTIONS',
+	'access-control-max-age': '86400',
+};
+
+function withCors(res: Response): Response {
+	const headers = new Headers(res.headers);
+	for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
+	return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 export default {
 	async fetch(req, env, ctx): Promise<Response> {
+		if (req.method === 'OPTIONS') {
+			return new Response(null, { status: 204, headers: CORS_HEADERS });
+		}
+
 		const url = new URL(req.url);
 
 		if (url.pathname === '/api/health') {
-			return handleHealth(env);
+			return withCors(await handleHealth(env));
 		}
 
 		if (url.pathname === '/') {
-			return new Response('agi-temperature worker: OK', { status: 200 });
+			return withCors(new Response('agi-temperature worker: OK', { status: 200 }));
 		}
 
-		return new Response('Not Found', { status: 404 });
+		return withCors(new Response('Not Found', { status: 404 }));
 	},
 
 	async scheduled(event, env, ctx): Promise<void> {
