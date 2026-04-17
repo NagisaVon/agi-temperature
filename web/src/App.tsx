@@ -13,10 +13,6 @@ export default function App() {
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
-		if (!API_BASE) {
-			setError('VITE_API_BASE is not set');
-			return;
-		}
 		fetch(`${API_BASE}/api/health`)
 			.then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
 			.then((data: Health) => setHealth(data))
@@ -31,7 +27,7 @@ export default function App() {
 				{error
 					? `error: ${error}`
 					: health
-					? `worker ${health.status} · ${health.row_count} readings · API base ${API_BASE}`
+					? `worker ${health.status} · ${health.row_count} readings${API_BASE ? ` · API base ${API_BASE}` : ''}`
 					: 'loading…'}
 			</p>
 		</main>
