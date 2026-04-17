@@ -53,19 +53,3 @@ All-in on Cloudflare's free tier. One vendor, one dashboard, one auth flow.
 - `npm run dev` (inside `web/`)
 - Deploys automatically on push via Cloudflare Pages' GitHub integration.
 
-## Data Model
-
-```sql
-CREATE TABLE readings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  recorded_at INTEGER NOT NULL,    -- unix seconds
-  score REAL NOT NULL,             -- raw aggregate score
-  temperature_c REAL NOT NULL,     -- mapped into [-89.2, 56.7]
-  matched_titles TEXT              -- JSON array of {rank, title, id}
-);
-CREATE INDEX idx_recorded_at ON readings(recorded_at);
-```
-
-## Branch
-
-All development happens on `claude/agi-temperature-tracker-VMMEi`.
