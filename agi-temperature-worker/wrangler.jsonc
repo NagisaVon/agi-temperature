@@ -12,39 +12,35 @@
 	},
 	"triggers": {
 		"crons": [
-			"* * * * *"
+			"*/5 * * * *"
 		]
 	},
 	"upload_source_maps": true,
 	"compatibility_flags": [
 		"nodejs_compat"
-	]
-	/**
-	 * Smart Placement
-	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
-	 */
-	// "placement": {  "mode": "smart" }
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
-	/**
-	 * Static Assets
-	 * https://developers.cloudflare.com/workers/static-assets/binding/
-	 */
-	// "assets": {  "directory": "./public/",  "binding": "ASSETS" }
-	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
-	 */
-	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "agi-temperature",
+			"database_id": "f19bb591-1e17-43ed-a5ae-aff1df80b498",
+			"migrations_dir": "migrations"
+		}
+	],
+	"env": {
+		"preview": {
+			"name": "agi-temperature-worker-preview",
+			"triggers": {
+				"crons": []
+			},
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "agi-temperature-preview",
+					"database_id": "a9c64874-bdca-41e3-bd32-e8e214d3885e",
+					"migrations_dir": "migrations"
+				}
+			]
+		}
+	}
 }
