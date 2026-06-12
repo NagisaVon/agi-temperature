@@ -1,10 +1,12 @@
 /**
  * agi-temperature Worker
  *
- * - scheduled: cron entry point for HN ingestion (stub; real logic lands later).
- * - fetch:     HTTP API. `/api/health` is the canary used by CI smoke tests
- *              and (later) an external uptime check.
+ * - scheduled: cron entry point — HN ingestion every 5 minutes.
+ * - fetch:     HTTP API, edge-cached per route (PRD §4.5).
  */
+
+import { handleCurrent, handleHealth, handleHistory, handleSummary } from './api';
+import { runIngestion } from './ingest';
 
 const CORS_HEADERS: Record<string, string> = {
 	'access-control-allow-origin': '*',
@@ -18,6 +20,24 @@ function withCors(res: Response): Response {
 	return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+async function withEdgeCache(req: Request, ttlSeconds: number, make: () => Promise<Response>): Promise<Response> {
+	const cache = caches.default;
+	const cached = await cache.match(req.url);
+	if (cached) {
+		const res = new Response(cached.body, cached);
+		res.headers.set('x-cache', 'HIT');
+		return res;
+	}
+
+	const res = await make();
+	res.headers.set('cache-control', `public, max-age=${ttlSeconds}`);
+	res.headers.set('x-cache', 'MISS');
+	// Awaited (not waitUntil) so a cache.put pending across requests can't
+	// deadlock the test runtime; the extra latency on a MISS is negligible.
+	if (res.status === 200) await cache.put(req.url, res.clone());
+	return res;
+}
+
 export default {
 	async fetch(req, env, ctx): Promise<Response> {
 		if (req.method === 'OPTIONS') {
@@ -26,39 +46,29 @@ export default {
 
 		const url = new URL(req.url);
 
-		if (url.pathname === '/api/health') {
-			return withCors(await handleHealth(env));
+		switch (url.pathname) {
+			case '/api/current':
+				return withCors(await withEdgeCache(req, 60, () => handleCurrent(env)));
+			case '/api/history':
+				return withCors(await withEdgeCache(req, 300, () => handleHistory(env, url)));
+			case '/api/summary':
+				return withCors(await withEdgeCache(req, 300, () => handleSummary(env)));
+			case '/api/health':
+				return withCors(await withEdgeCache(req, 60, () => handleHealth(env)));
+			case '/':
+				return withCors(new Response('agi-temperature worker: OK', { status: 200 }));
+			default:
+				return withCors(new Response('Not Found', { status: 404 }));
 		}
-
-		if (url.pathname === '/') {
-			return withCors(new Response('agi-temperature worker: OK', { status: 200 }));
-		}
-
-		return withCors(new Response('Not Found', { status: 404 }));
 	},
 
 	async scheduled(event, env, ctx): Promise<void> {
-		// TODO: replace stub with HN ingestion once the schema + scoring module land.
-		console.log(`trigger fired at ${event.cron}`);
+		ctx.waitUntil(
+			runIngestion(env, event.scheduledTime).catch((err) => {
+				// Abort, don't throw: a failed run leaves a visible gap (PRD §4.1)
+				// and persistent failure is caught by /api/health staleness.
+				console.error('ingestion failed:', err);
+			}),
+		);
 	},
 } satisfies ExportedHandler<Env>;
-
-async function handleHealth(env: Env): Promise<Response> {
-	const row = await env.DB.prepare(
-		'SELECT MAX(recorded_at) AS last_recorded_at, COUNT(*) AS row_count FROM readings',
-	).first<{ last_recorded_at: number | null; row_count: number }>();
-
-	const body = {
-		status: 'ok',
-		last_recorded_at: row?.last_recorded_at ?? null,
-		row_count: row?.row_count ?? 0,
-	};
-
-	return new Response(JSON.stringify(body), {
-		status: 200,
-		headers: {
-			'content-type': 'application/json',
-			'cache-control': 'public, max-age=60',
-		},
-	});
-}

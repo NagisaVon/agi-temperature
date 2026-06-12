@@ -1,0 +1,439 @@
+/* Hacker News color theme: the thermometer reads HN, so it dresses like HN. */
+
+:root {
+	--bg: #f6f6ef;
+	--bg-raised: #ffffff;
+	--fg: #1a1a1a;
+	--muted: #828282;
+	--line: #e0e0d2;
+	--accent: #ff6600;
+	--cold: #4a90d9;
+	--hot: #ff6600;
+
+	color-scheme: light;
+	font-family: Verdana, Geneva, sans-serif;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+	margin: 0;
+	min-height: 100vh;
+}
+
+body {
+	background: var(--bg);
+	color: var(--fg);
+	font-size: 14px;
+	-webkit-font-smoothing: antialiased;
+}
+
+a {
+	color: inherit;
+}
+
+button {
+	font: inherit;
+}
+
+.app {
+	position: relative;
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
+}
+
+/* ---- Header: the orange bar ---- */
+
+.app-header {
+	position: relative;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.45rem 0.8rem;
+	background: var(--accent);
+}
+
+.wordmark {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	font-weight: 700;
+	font-size: 0.95rem;
+	color: #000;
+	text-decoration: none;
+}
+
+.logo-box {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	border: 1px solid #fff;
+	font-size: 13px;
+	line-height: 1;
+}
+
+.wordmark span.wordmark-text b {
+	color: #000;
+}
+
+.app-nav {
+	display: flex;
+	align-items: center;
+	gap: 0.9rem;
+	font-size: 0.86rem;
+	white-space: nowrap;
+}
+
+.app-nav a {
+	color: #1a0d00;
+	text-decoration: none;
+}
+
+.app-nav a.active {
+	color: #fff;
+}
+
+.app-nav a:hover {
+	text-decoration: underline;
+}
+
+.unit-toggle {
+	background: transparent;
+	color: #000;
+	border: 1px solid rgba(0, 0, 0, 0.55);
+	border-radius: 3px;
+	padding: 0.18rem 0.55rem;
+	cursor: pointer;
+	font-size: 0.8rem;
+}
+
+.unit-toggle:hover {
+	background: rgba(255, 255, 255, 0.25);
+}
+
+@media (max-width: 640px) {
+	.app-header {
+		padding: 0.45rem 0.6rem;
+	}
+
+	.app-nav {
+		gap: 0.6rem;
+		font-size: 0.8rem;
+	}
+}
+
+.app-main {
+	position: relative;
+	z-index: 1;
+	flex: 1;
+	width: 100%;
+	max-width: 880px;
+	margin: 0 auto;
+	padding: 0 1.4rem 3rem;
+}
+
+.app-footer {
+	position: relative;
+	z-index: 2;
+	margin-top: 1rem;
+	padding: 0.9rem 1.4rem 1.2rem;
+	border-top: 2px solid var(--accent);
+	color: var(--muted);
+	font-size: 0.74rem;
+	display: flex;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	background: var(--bg);
+}
+
+.app-footer a {
+	color: var(--muted);
+}
+
+/* ---- Scene backdrop ---- */
+
+.scene-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 0;
+}
+
+.scene-scrim {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: linear-gradient(
+		180deg,
+		rgba(10, 14, 26, 0.22) 0%,
+		rgba(10, 14, 26, 0) 24%,
+		rgba(246, 246, 239, 0) 52%,
+		rgba(246, 246, 239, 0.82) 80%,
+		var(--bg) 100%
+	);
+}
+
+/* ---- Home reading ---- */
+
+.reading,
+.section,
+.loading-state,
+.empty-state {
+	/* Sit above the fixed scene backdrop (z-index 0). */
+	position: relative;
+	z-index: 1;
+}
+
+.reading {
+	text-align: center;
+	padding: 3.5rem 0 1.5rem;
+}
+
+.reading-hero {
+	min-height: 66vh;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	padding: 2rem 0 4rem;
+}
+
+.reading-hero .reading-temp,
+.reading-hero .reading-tagline {
+	color: #fff;
+	text-shadow: 0 2px 28px rgba(4, 8, 18, 0.7);
+}
+
+.reading-hero .reading-advisory,
+.reading-hero .reading-meta {
+	color: #dce3ee;
+	text-shadow: 0 1px 12px rgba(4, 8, 18, 0.85);
+}
+
+.reading-hero .reading-meta a {
+	color: #fff;
+}
+
+.reading-hero .thermometer text {
+	fill: rgba(255, 255, 255, 0.78);
+}
+
+.reading-row {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 1.5rem;
+	flex-wrap: wrap;
+}
+
+.thermometer {
+	flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+	.thermometer {
+		display: none;
+	}
+}
+
+.reading-temp {
+	font-size: clamp(4.5rem, 18vw, 9rem);
+	font-weight: 700;
+	line-height: 1;
+	letter-spacing: -0.03em;
+	margin: 0;
+	font-variant-numeric: tabular-nums;
+}
+
+.reading-tagline {
+	font-size: clamp(1.1rem, 3.4vw, 1.5rem);
+	font-weight: 700;
+	margin: 0.9rem 0 0.3rem;
+}
+
+.reading-advisory {
+	color: var(--muted);
+	margin: 0.2rem auto 0;
+	max-width: 34rem;
+}
+
+.reading-meta {
+	margin-top: 1.4rem;
+	color: var(--muted);
+	font-size: 0.84rem;
+	line-height: 1.7;
+}
+
+.reading-meta a {
+	color: var(--fg);
+}
+
+.section {
+	margin-top: 2.5rem;
+}
+
+.section h2 {
+	font-size: 0.82rem;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--accent);
+	margin: 0 0 0.9rem;
+}
+
+/* ---- Trend chart ---- */
+
+.range-switcher {
+	display: flex;
+	gap: 0.4rem;
+	margin-bottom: 1rem;
+	flex-wrap: wrap;
+}
+
+.range-btn {
+	background: transparent;
+	color: var(--muted);
+	border: 1px solid var(--line);
+	border-radius: 3px;
+	padding: 0.25rem 0.7rem;
+	cursor: pointer;
+	font-size: 0.78rem;
+}
+
+.range-btn:hover {
+	color: var(--fg);
+	border-color: var(--muted);
+}
+
+.range-btn.active {
+	background: var(--accent);
+	color: #fff;
+	border-color: var(--accent);
+}
+
+.chart-frame {
+	background: var(--bg-raised);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	padding: 1rem 0.6rem 0.4rem 0.2rem;
+}
+
+/* ---- Records ---- */
+
+.records {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+	gap: 0.8rem;
+}
+
+.record {
+	background: var(--bg-raised);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	padding: 1rem 1.1rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+}
+
+.record-label {
+	font-size: 0.7rem;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+
+.record-high .record-label {
+	color: var(--hot);
+}
+
+.record-low .record-label {
+	color: var(--cold);
+}
+
+.record-value {
+	font-size: 1.6rem;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+
+.record-when {
+	color: var(--muted);
+	font-size: 0.76rem;
+}
+
+/* ---- Headlines: dressed as the HN front page itself ---- */
+
+.receipts-intro {
+	color: var(--muted);
+	max-width: 42rem;
+	font-size: 0.85rem;
+	line-height: 1.6;
+}
+
+.receipt-list {
+	list-style: none;
+	margin: 1.2rem 0 0;
+	padding: 0;
+}
+
+.receipt {
+	display: grid;
+	grid-template-columns: 2.4rem 1fr;
+	column-gap: 0.35rem;
+	padding: 0.28rem 0;
+	align-items: baseline;
+}
+
+.receipt-rank {
+	color: var(--muted);
+	text-align: right;
+	font-size: 0.92rem;
+	font-variant-numeric: tabular-nums;
+}
+
+.receipt-title {
+	font-size: 0.92rem;
+	color: var(--fg);
+	text-decoration: none;
+}
+
+.receipt-title:visited {
+	color: var(--muted);
+}
+
+.receipt-title:hover {
+	text-decoration: underline;
+}
+
+.receipt-stats {
+	grid-column: 2;
+	color: var(--muted);
+	font-size: 0.72rem;
+	margin-top: 0.12rem;
+}
+
+.receipt-stats .bar {
+	display: inline-block;
+	height: 4px;
+	max-width: 9rem;
+	border-radius: 2px;
+	background: var(--accent);
+	opacity: 0.75;
+	vertical-align: middle;
+	margin-left: 0.45rem;
+}
+
+.empty-state,
+.loading-state {
+	text-align: center;
+	color: var(--muted);
+	padding: 4rem 0;
+}

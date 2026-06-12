@@ -1,39 +1,73 @@
-import { useEffect, useState } from 'react';
-
-type Health = {
-	status: string;
-	last_recorded_at: number | null;
-	row_count: number;
-};
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+import { useEffect } from 'react';
+import { NavLink, Route, Routes } from 'react-router-dom';
+import { bandFor } from './taglines';
+import { useUnit } from './unit';
+import { useCurrent } from './useCurrent';
+import Home from './pages/Home';
+import Headlines from './pages/Headlines';
+import NotFound from './pages/NotFound';
+import Spike from './pages/Spike';
 
 export default function App() {
-	const [health, setHealth] = useState<Health | null>(null);
-	const [error, setError] = useState<string | null>(null);
+	const { unit, toggle } = useUnit();
+	const current = useCurrent();
 
 	useEffect(() => {
-		if (!API_BASE) {
-			setError('VITE_API_BASE is not set');
-			return;
+		if (current.kind === 'ready') {
+			const t = current.data.temperature_c;
+			document.title = `${t.toFixed(1)}°C · ${bandFor(t).tagline} — AGI Temperature`;
+		} else if (current.kind === 'no_data') {
+			document.title = 'AGI Temperature — warming up';
 		}
-		fetch(`${API_BASE}/api/health`)
-			.then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-			.then((data: Health) => setHealth(data))
-			.catch((e: Error) => setError(e.message));
-	}, []);
+	}, [current]);
 
 	return (
-		<main style={{ fontFamily: 'system-ui', padding: '2rem', maxWidth: 640, margin: '0 auto' }}>
-			<h1>AGI Temperature</h1>
-			<p>Current reading: <strong>—°C</strong></p>
-			<p style={{ color: '#666', fontSize: '0.9rem' }}>
-				{error
-					? `error: ${error}`
-					: health
-					? `worker ${health.status} · ${health.row_count} readings · API base ${API_BASE}`
-					: 'loading…'}
-			</p>
-		</main>
+		<div className="app">
+			<header className="app-header">
+				<NavLink to="/" className="wordmark">
+					<span className="logo-box">🌡</span>
+					AGI Temperature
+				</NavLink>
+				<nav className="app-nav">
+					<NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
+						Now
+					</NavLink>
+					<NavLink to="/headlines" className={({ isActive }) => (isActive ? 'active' : '')}>
+						The Receipts
+					</NavLink>
+					<button
+						type="button"
+						className="unit-toggle"
+						onClick={toggle}
+						title={unit === 'C' ? 'Switch to Freedom Units' : 'Switch back to SI, like the researchers intended'}
+					>
+						°{unit} → °{unit === 'C' ? 'F' : 'C'}
+					</button>
+				</nav>
+			</header>
+
+			<main className="app-main">
+				<Routes>
+					<Route path="/" element={<Home current={current} />} />
+					<Route path="/headlines" element={<Headlines current={current} />} />
+					<Route path="/spike" element={<Spike />} />
+					<Route path="*" element={<NotFound />} />
+				</Routes>
+			</main>
+
+			<footer className="app-footer">
+				<span>
+					Range: −89.2 °C (Vostok, 1983) to +56.7 °C (Furnace Creek, 1913) — the only benchmarks AI hasn't saturated.
+				</span>
+				<span>
+					{current.kind === 'ready'
+						? `classifier ${current.data.classifier_version} · scoring ${current.data.scoring_version} · `
+						: ''}
+					<a href="https://github.com/NagisaVon/agi-temperature" target="_blank" rel="noreferrer">
+						source
+					</a>
+				</span>
+			</footer>
+		</div>
 	);
 }
