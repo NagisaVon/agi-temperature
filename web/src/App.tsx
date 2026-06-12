@@ -4,6 +4,7 @@ import { useCurrent } from './useCurrent';
 import Home from './pages/Home';
 import Headlines from './pages/Headlines';
 import NotFound from './pages/NotFound';
+import Spike from './pages/Spike';
 
 export default function App() {
 	const { unit, toggle } = useUnit();
@@ -37,6 +38,7 @@ export default function App() {
 				<Routes>
 					<Route path="/" element={<Home current={current} />} />
 					<Route path="/headlines" element={<Headlines current={current} />} />
+					<Route path="/spike" element={<Spike />} />
 					<Route path="*" element={<NotFound />} />
 				</Routes>
 			</main>
