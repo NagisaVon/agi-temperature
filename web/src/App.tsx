@@ -25,7 +25,8 @@ export default function App() {
 		<div className="app">
 			<header className="app-header">
 				<NavLink to="/" className="wordmark">
-					AGI <span>Temperature</span>
+					<span className="logo-box">🌡</span>
+					AGI Temperature
 				</NavLink>
 				<nav className="app-nav">
 					<NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>

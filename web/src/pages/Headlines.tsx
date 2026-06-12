@@ -38,7 +38,7 @@ export default function Headlines({ current }: { current: CurrentState }) {
 						const blame = aiWeightTotal > 0 ? (s.weight / aiWeightTotal) * 100 : 0;
 						return (
 							<li key={s.rank} className="receipt">
-								<span className="receipt-rank">#{s.rank}</span>
+								<span className="receipt-rank">{s.rank}.</span>
 								<a
 									className="receipt-title"
 									href={`https://news.ycombinator.com/item?id=${s.hn_id}`}
@@ -48,11 +48,8 @@ export default function Headlines({ current }: { current: CurrentState }) {
 									{s.title}
 								</a>
 								<span className="receipt-stats">
-									{s.points ?? '—'} pts · {s.num_comments ?? '—'} comments
-								</span>
-								<span className="receipt-blame">
+									{s.points ?? '—'} points | {s.num_comments ?? '—'} comments | {blame.toFixed(1)}% of the blame
 									<span className="bar" style={{ width: `${Math.max(2, blame)}%` }} />
-									{blame.toFixed(1)}% of the blame
 								</span>
 							</li>
 						);

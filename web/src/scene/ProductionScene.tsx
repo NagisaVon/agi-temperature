@@ -1,646 +1,703 @@
-import { useEffect, useMemo, useRef } from 'react';
-import type { CSSProperties } from 'react';
+import { useEffect, useRef } from 'react';
+import * as THREE from 'three';
 import type { SceneProps } from './SceneProps';
-import { cssRGB, type RGB, type SceneParams } from './sceneParams';
+import type { RGB, SceneParams } from './sceneParams';
 
-/**
- * Route A: layered DOM/CSS/SVG scenery + ONE 2D canvas for all particle
- * systems (snow / rain / tokens / embers) and the heat shimmer.
- *
- * Heat shimmer technique: the canvas draws ~9 horizontal slices of a
- * horizon-colored gradient strip across the horizon band, each slice given an
- * animated sinusoidal x-offset and composited with 'lighter' at low alpha
- * (∝ params.shimmer). The wavering bright bands read as rising heat haze
- * without needing to sample the DOM behind the canvas.
- */
+// WYSIWYG colors: the shaders work in sRGB values directly.
+THREE.ColorManagement.enabled = false;
 
-const HORIZON = 0.62;
-
+const HORIZON = 0.38; // scene y (0 = bottom) of the horizon line, i.e. 62% down from the top
 const SNOW_MAX = 400;
 const RAIN_MAX = 500;
 const TOKEN_MAX = 220;
 const EMBER_MAX = 120;
-
 const GLYPHS = ['Σ', '∂', 'π', '∫', '{', '}', ';', '=>', '(', ')', '0', '1', '▌', '§', '<eot>', '42', 'λ', '::'];
+const ATLAS_COLS = 6;
+const ATLAS_ROWS = 3;
 
-const TAU = Math.PI * 2;
-
-const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-
-function mixRGB(a: RGB, b: RGB, t: number): RGB {
-	return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
-}
-
-function rgba(c: RGB, a: number): string {
-	return `rgba(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])}, ${clamp01(a).toFixed(3)})`;
-}
-
-function mulberry32(seed: number): () => number {
-	let a = seed >>> 0;
-	return () => {
-		a = (a + 0x6d2b79f5) >>> 0;
-		let t = a;
-		t = Math.imul(t ^ (t >>> 15), t | 1);
-		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-	};
-}
-
-type Particle = {
-	/** Normalized [0,1] coords so resize keeps relative positions. */
-	x: number;
-	y: number;
-	seed: number;
-	phase: number;
-	/** Crossfade 0..1 toward its density-driven target, so scrubbing blends populations. */
-	fade: number;
-	life: number;
-	g: number;
-};
-
-function makePool(n: number, rand: () => number): Particle[] {
-	return Array.from({ length: n }, () => ({
-		x: rand(),
-		y: rand(),
-		seed: rand(),
-		phase: rand() * TAU,
-		fade: 0,
-		life: 0.15 + 0.85 * rand(),
-		g: Math.floor(rand() * GLYPHS.length),
-	}));
-}
-
-type Pools = { snow: Particle[]; rain: Particle[]; tokens: Particle[]; embers: Particle[] };
-
-type GlyphSprite = { c: HTMLCanvasElement; w: number; h: number };
-
-/** Pre-render each glyph (with its glow baked in) so the loop is pure drawImage. */
-function makeGlyphSprites(): GlyphSprite[] {
-	const font = '600 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-	const measure = document.createElement('canvas').getContext('2d');
-	return GLYPHS.map((g) => {
-		let tw = 14;
-		if (measure) {
-			measure.font = font;
-			tw = Math.ceil(measure.measureText(g).width);
-		}
-		const pad = 8;
-		const w = tw + pad * 2;
-		const h = 15 + pad * 2;
-		const c = document.createElement('canvas');
-		c.width = w * 2;
-		c.height = h * 2;
-		const cx = c.getContext('2d');
-		if (cx) {
-			cx.setTransform(2, 0, 0, 2, 0, 0);
-			cx.font = font;
-			cx.textAlign = 'center';
-			cx.textBaseline = 'middle';
-			cx.shadowColor = 'rgba(255, 138, 40, 0.95)';
-			cx.shadowBlur = 7;
-			cx.fillStyle = 'rgb(255, 216, 152)';
-			cx.fillText(g, w / 2, h / 2);
-			cx.fillText(g, w / 2, h / 2);
-		}
-		return { c, w, h };
-	});
-}
-
-const KEYFRAMES = `
-@keyframes raPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
-@keyframes raBeacon { 0%, 100% { opacity: 0.15; } 50% { opacity: 1; } }
-@keyframes raBob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(4px); } }
-@keyframes raAurora {
-	0%, 100% { transform: skewX(-14deg) translateX(-1.5%); }
-	50% { transform: skewX(-11deg) translateX(1.5%); }
+const QUAD_VERT = /* glsl */ `
+varying vec2 vUv;
+void main() {
+	vUv = uv;
+	gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
 
-export default function ProductionScene({ params, reducedMotion }: SceneProps) {
-	const rootRef = useRef<HTMLDivElement | null>(null);
-	const canvasRef = useRef<HTMLCanvasElement | null>(null);
-	const fogARef = useRef<HTMLDivElement | null>(null);
-	const fogBRef = useRef<HTMLDivElement | null>(null);
-	const poolsRef = useRef<Pools | null>(null);
+const SKY_FRAG = /* glsl */ `
+varying vec2 vUv;
+uniform vec3 uTop;
+uniform vec3 uHorizon;
+uniform vec3 uLow;
+uniform vec3 uSunColor;
+uniform vec2 uSunPos;
+uniform float uSunIntensity;
+uniform float uShimmer;
+uniform float uFog;
+uniform float uTime;
+uniform float uAspect;
+uniform float uWind;
+uniform float uU;
 
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+void main() {
+	float H = ${HORIZON.toFixed(3)};
+	vec2 uv = vUv;
+
+	// Heat shimmer: time-animated sinusoidal UV distortion concentrated at the horizon.
+	float band = exp(-abs(uv.y - H) * 8.0);
+	float wob = sin(uv.y * 110.0 + uTime * 3.1 + sin(uv.x * 9.0 + uTime * 0.7) * 2.0);
+	uv.x += wob * 0.007 * uShimmer * band;
+	uv.y += sin(uv.x * 70.0 - uTime * 2.4) * 0.004 * uShimmer * band;
+
+	vec3 col;
+	if (uv.y >= H) {
+		float t = (uv.y - H) / (1.0 - H);
+		col = mix(uHorizon, uTop, pow(t, 0.8));
+	} else {
+		float t = (H - uv.y) / H;
+		col = mix(uHorizon * 0.55, uLow * 0.85, smoothstep(0.0, 0.75, t));
+		// Sun reflection column with animated glitter on the sea.
+		float dx = abs(uv.x - uSunPos.x) * uAspect;
+		float glit = 0.6 + 0.4 * sin(uv.y * 240.0 + uTime * 1.8 + sin(uv.x * 50.0) * 3.0);
+		col += uSunColor * exp(-dx * 14.0) * exp(-t * 5.0) * glit * uSunIntensity * 0.4;
+	}
+
+	// Sun disk + halo, occluded by the sea below the horizon.
+	vec2 d = (uv - uSunPos) * vec2(uAspect, 1.0);
+	float dist = length(d);
+	float occ = smoothstep(H - 0.012, H + 0.004, uv.y);
+	float disk = smoothstep(0.05, 0.038, dist);
+	float halo = exp(-dist * mix(10.0, 4.5, uSunIntensity)) * uSunIntensity;
+	col += uSunColor * (disk * (0.7 + 0.5 * uSunIntensity) + halo * 0.8) * occ;
+	col += uSunColor * exp(-dist * 2.0) * 0.15 * uSunIntensity;
+
+	// Cold-end night dressing: stars + aurora, both continuous in u.
+	float cold = 1.0 - smoothstep(0.1, 0.45, uU);
+	if (cold > 0.001) {
+		float skyH = smoothstep(H + 0.05, H + 0.3, vUv.y);
+		vec2 sp = vUv * vec2(uAspect, 1.0) * 160.0;
+		float h1 = hash(floor(sp));
+		float star = smoothstep(0.92, 1.0, h1) * smoothstep(0.35, 0.0, length(fract(sp) - 0.5));
+		float tw = 0.6 + 0.4 * sin(uTime * (1.0 + h1 * 3.0) + h1 * 40.0);
+		col += vec3(0.75, 0.85, 1.0) * star * tw * cold * skyH * 0.9;
+		float ay = smoothstep(0.5, 0.72, vUv.y) * (1.0 - smoothstep(0.82, 0.98, vUv.y));
+		float cur = 0.5 + 0.5 * sin(vUv.x * 5.0 + uTime * 0.25 + sin(vUv.x * 11.0 - uTime * 0.18) * 1.6);
+		col += vec3(0.12, 0.85, 0.5) * cur * cur * ay * cold * 0.18;
+		col += vec3(0.35, 0.3, 0.85) * cur * ay * cold * 0.08;
+	}
+
+	// Background fog band hugging the horizon, drifting with the wind.
+	float drift = 0.7 + 0.3 * sin(uv.x * 6.0 - uTime * (0.3 + uWind * 0.7) + sin(uv.x * 17.0 + uTime * 0.2));
+	float fogA = uFog * exp(-abs(uv.y - H) * 11.0) * drift;
+	vec3 fogC = mix(uHorizon, vec3(0.9, 0.93, 1.0), 0.25);
+	col = mix(col, fogC, clamp(fogA * 0.8, 0.0, 1.0));
+
+	gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// A second, lighter fog pass in front of the props so mist overlaps bergs/datacenter.
+const FOG_FRAG = /* glsl */ `
+varying vec2 vUv;
+uniform float uFog;
+uniform float uTime;
+uniform float uWind;
+uniform vec3 uHorizonC;
+void main() {
+	float H = ${HORIZON.toFixed(3)};
+	float drift = 0.65 + 0.35 * sin(vUv.x * 9.0 - uTime * (0.4 + uWind * 0.9) + sin(vUv.x * 23.0 + uTime * 0.33) * 1.2);
+	float a = uFog * exp(-abs(vUv.y - H) * 16.0) * drift * 0.5;
+	vec3 c = mix(uHorizonC, vec3(0.92, 0.95, 1.0), 0.35);
+	gl_FragColor = vec4(c, a);
+}
+`;
+
+const GLOW_FRAG = /* glsl */ `
+varying vec2 vUv;
+uniform float uGlow;
+void main() {
+	vec2 p = (vUv - vec2(0.5, 0.42)) * vec2(1.0, 1.5);
+	float a = exp(-dot(p, p) * 9.0) * uGlow;
+	gl_FragColor = vec4(vec3(1.0, 0.5, 0.18), a * 0.55);
+}
+`;
+
+const FROST_FRAG = /* glsl */ `
+varying vec2 vUv;
+uniform float uFrost;
+void main() {
+	float teeth = 0.42 + 0.3 * sin(vUv.x * 150.0) * (0.6 + 0.4 * sin(vUv.x * 41.0 + 1.7));
+	float m = smoothstep(teeth - 0.08, teeth + 0.12, vUv.y);
+	gl_FragColor = vec4(vec3(0.85, 0.92, 1.0), m * uFrost * 0.9);
+}
+`;
+
+const PARTICLE_HEAD = /* glsl */ `
+uniform float uTime;
+uniform float uWind;
+uniform float uDensity;
+uniform float uPixelRatio;
+uniform float uHScale;
+attribute vec4 aSeed;
+varying float vAlpha;
+`;
+
+// Each particle owns a random threshold (aSeed.z); populations crossfade as density sweeps past it.
+const FADE = 'clamp((uDensity - aSeed.z) * 5.0, 0.0, 1.0)';
+
+const SNOW_VERT = `${PARTICLE_HEAD}
+void main() {
+	float v = aSeed.w;
+	float speed = mix(0.05, 0.12, v);
+	float y = fract(aSeed.y - uTime * speed);
+	float sway = sin(uTime * mix(0.5, 1.6, fract(v * 7.13)) + aSeed.x * 40.0) * 0.014 * (0.25 + uWind);
+	float x = fract(aSeed.x + uTime * speed * uWind * 1.4 + sway);
+	vAlpha = ${FADE} * mix(0.45, 1.0, fract(v * 3.71));
+	vec2 p = vec2(x, y) * 1.08 - 0.04;
+	gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 0.0, 1.0);
+	gl_PointSize = mix(1.6, 4.2, fract(v * 5.91)) * uPixelRatio * uHScale;
+}
+`;
+
+const SNOW_FRAG = /* glsl */ `
+varying float vAlpha;
+void main() {
+	float d = length(gl_PointCoord - 0.5);
+	float a = smoothstep(0.5, 0.12, d) * vAlpha;
+	gl_FragColor = vec4(vec3(0.92, 0.96, 1.0), a * 0.9);
+}
+`;
+
+const RAIN_VERT = `${PARTICLE_HEAD}
+void main() {
+	float v = aSeed.w;
+	float speed = mix(0.85, 1.5, v);
+	float y = fract(aSeed.y - uTime * speed);
+	float x = fract(aSeed.x + uTime * speed * uWind * 0.22);
+	vAlpha = ${FADE} * mix(0.5, 1.0, fract(v * 4.7));
+	vec2 p = vec2(x, y) * 1.1 - 0.05;
+	gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 0.0, 1.0);
+	gl_PointSize = mix(18.0, 30.0, fract(v * 6.3)) * uPixelRatio * uHScale;
+}
+`;
+
+const RAIN_FRAG = /* glsl */ `
+uniform float uWind;
+varying float vAlpha;
+void main() {
+	vec2 p = gl_PointCoord - 0.5;
+	vec2 dir = normalize(vec2(uWind * 0.22, 1.0));
+	float t = dot(p, dir);
+	float perp = abs(p.x * dir.y - p.y * dir.x);
+	float a = (1.0 - smoothstep(0.0, 0.045, perp)) * (1.0 - smoothstep(0.2, 0.5, abs(t)));
+	gl_FragColor = vec4(vec3(0.62, 0.72, 0.88), a * vAlpha * 0.55);
+}
+`;
+
+const TOKEN_VERT = `${PARTICLE_HEAD}
+attribute float aGlyph;
+varying float vGlyph;
+void main() {
+	float v = aSeed.w;
+	float speed = mix(0.1, 0.22, v);
+	float y = fract(aSeed.y - uTime * speed);
+	float x = fract(aSeed.x + uTime * speed * uWind * 0.25 + sin(uTime * mix(0.4, 1.0, v) + aSeed.x * 30.0) * 0.008);
+	float flicker = 0.7 + 0.3 * sin(uTime * mix(2.0, 6.0, fract(v * 8.7)) + aSeed.x * 50.0);
+	vAlpha = ${FADE} * flicker;
+	vGlyph = aGlyph;
+	vec2 p = vec2(x, y) * 1.08 - 0.04;
+	gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 0.0, 1.0);
+	gl_PointSize = mix(14.0, 26.0, fract(v * 5.13)) * uPixelRatio * uHScale;
+}
+`;
+
+const TOKEN_FRAG = /* glsl */ `
+uniform sampler2D uAtlas;
+varying float vAlpha;
+varying float vGlyph;
+void main() {
+	float col6 = mod(vGlyph, ${ATLAS_COLS.toFixed(1)});
+	float row = floor(vGlyph / ${ATLAS_COLS.toFixed(1)});
+	vec2 uv = vec2((col6 + gl_PointCoord.x) / ${ATLAS_COLS.toFixed(1)}, 1.0 - (row + gl_PointCoord.y) / ${ATLAS_ROWS.toFixed(1)});
+	float m = texture2D(uAtlas, uv).a;
+	vec3 col = mix(vec3(1.0, 0.55, 0.18), vec3(1.0, 0.92, 0.7), m * 0.5);
+	gl_FragColor = vec4(col, m * vAlpha);
+}
+`;
+
+const EMBER_VERT = `${PARTICLE_HEAD}
+void main() {
+	float v = aSeed.w;
+	float speed = mix(0.05, 0.13, v);
+	float life = fract(aSeed.y + uTime * speed);
+	float rise = mix(0.25, 0.55, fract(v * 3.3));
+	float y = ${(HORIZON + 0.005).toFixed(3)} + life * rise;
+	float x = mix(0.55, 1.0, aSeed.x) + sin(uTime * mix(1.0, 2.4, v) + aSeed.x * 60.0) * 0.015 * (0.4 + uWind) + life * uWind * 0.04;
+	vAlpha = ${FADE} * (1.0 - life) * (1.0 - life);
+	gl_Position = projectionMatrix * modelViewMatrix * vec4(x, y, 0.0, 1.0);
+	gl_PointSize = mix(2.0, 4.5, fract(v * 7.7)) * (1.0 - life * 0.5) * uPixelRatio * uHScale;
+}
+`;
+
+const EMBER_FRAG = /* glsl */ `
+varying float vAlpha;
+void main() {
+	float d = length(gl_PointCoord - 0.5) * 2.0;
+	float core = exp(-d * d * 5.0);
+	vec3 col = mix(vec3(1.0, 0.85, 0.45), vec3(1.0, 0.32, 0.06), d);
+	gl_FragColor = vec4(col, core * vAlpha);
+}
+`;
+
+function makeGlyphAtlas(): THREE.CanvasTexture {
+	const cell = 64;
+	const canvas = document.createElement('canvas');
+	canvas.width = ATLAS_COLS * cell;
+	canvas.height = ATLAS_ROWS * cell;
+	const ctx = canvas.getContext('2d')!;
+	ctx.textAlign = 'center';
+	ctx.textBaseline = 'middle';
+	ctx.fillStyle = '#fff';
+	ctx.shadowColor = 'rgba(255,255,255,0.9)';
+	ctx.shadowBlur = 7;
+	GLYPHS.forEach((g, i) => {
+		const cx = (i % ATLAS_COLS) * cell + cell / 2;
+		const cy = Math.floor(i / ATLAS_COLS) * cell + cell / 2;
+		let size = 44;
+		ctx.font = `bold ${size}px ui-monospace, Menlo, monospace`;
+		const w = ctx.measureText(g).width;
+		if (w > cell - 10) {
+			size = Math.floor((size * (cell - 10)) / w);
+			ctx.font = `bold ${size}px ui-monospace, Menlo, monospace`;
+		}
+		ctx.fillText(g, cx, cy);
+	});
+	const tex = new THREE.CanvasTexture(canvas);
+	tex.generateMipmaps = false;
+	tex.minFilter = THREE.LinearFilter;
+	return tex;
+}
+
+/** Jagged berg silhouette (unit outline, waterline at y=0) with a vertical ice gradient baked into vertex colors. */
+function bergGeometry(outline: ReadonlyArray<readonly [number, number]>): THREE.ShapeGeometry {
+	const shape = new THREE.Shape();
+	shape.moveTo(outline[0][0], outline[0][1]);
+	for (let i = 1; i < outline.length; i++) shape.lineTo(outline[i][0], outline[i][1]);
+	shape.closePath();
+	const geo = new THREE.ShapeGeometry(shape);
+	const pos = geo.getAttribute('position');
+	let maxY = 0.001;
+	for (let i = 0; i < pos.count; i++) maxY = Math.max(maxY, pos.getY(i));
+	const colors = new Float32Array(pos.count * 3);
+	for (let i = 0; i < pos.count; i++) {
+		const t = Math.max(0, pos.getY(i) / maxY);
+		const facet = 0.92 + 0.08 * Math.sin(pos.getX(i) * 37);
+		colors[i * 3] = (0.45 + 0.47 * t) * facet;
+		colors[i * 3 + 1] = (0.6 + 0.37 * t) * facet;
+		colors[i * 3 + 2] = (0.8 + 0.2 * t) * facet;
+	}
+	geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+	return geo;
+}
+
+function makePoints(
+	count: number,
+	vert: string,
+	frag: string,
+	blending: THREE.Blending,
+	extra: Record<string, THREE.IUniform> = {},
+	glyphs = false,
+): THREE.Points {
+	const geo = new THREE.BufferGeometry();
+	geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+	const seeds = new Float32Array(count * 4);
+	for (let i = 0; i < seeds.length; i++) seeds[i] = Math.random();
+	geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 4));
+	if (glyphs) {
+		const g = new Float32Array(count);
+		for (let i = 0; i < count; i++) g[i] = Math.floor(Math.random() * GLYPHS.length);
+		geo.setAttribute('aGlyph', new THREE.BufferAttribute(g, 1));
+	}
+	const mat = new THREE.ShaderMaterial({
+		uniforms: {
+			uTime: { value: 0 },
+			uWind: { value: 0 },
+			uDensity: { value: 0 },
+			uPixelRatio: { value: 1 },
+			uHScale: { value: 1 },
+			...extra,
+		},
+		vertexShader: vert,
+		fragmentShader: frag,
+		transparent: true,
+		depthWrite: false,
+		blending,
+	});
+	const pts = new THREE.Points(geo, mat);
+	pts.frustumCulled = false;
+	return pts;
+}
+
+// Packed param layout: 0-2 skyTop, 3-5 skyHorizon, 6-8 skyLow, 9-11 sunColor, 12 sunEl,
+// 13 sunInt, 14 wind, 15 snow, 16 rain, 17 tokens, 18 embers, 19 shimmer, 20 fog,
+// 21 iceberg, 22 frost, 23 rackGlow, 24 u.
+const PACK_LEN = 25;
+
+function packRGB(out: Float32Array, i: number, rgb: RGB): void {
+	out[i] = rgb[0] / 255;
+	out[i + 1] = rgb[1] / 255;
+	out[i + 2] = rgb[2] / 255;
+}
+
+function packParams(p: SceneParams, out: Float32Array): void {
+	packRGB(out, 0, p.sky.top);
+	packRGB(out, 3, p.sky.horizon);
+	packRGB(out, 6, p.sky.low);
+	packRGB(out, 9, p.sun.color);
+	out[12] = p.sun.elevation;
+	out[13] = p.sun.intensity;
+	out[14] = p.wind;
+	out[15] = p.particles.snow;
+	out[16] = p.particles.rain;
+	out[17] = p.particles.tokens;
+	out[18] = p.particles.embers;
+	out[19] = p.shimmer;
+	out[20] = p.fog;
+	out[21] = p.iceberg;
+	out[22] = p.frost;
+	out[23] = p.rackGlow;
+	out[24] = p.u;
+}
+
+const BERGS = [
+	{
+		outline: [[-0.5, 0], [-0.4, 0.34], [-0.28, 0.18], [-0.14, 0.62], [-0.02, 0.4], [0.1, 1.0], [0.22, 0.46], [0.34, 0.6], [0.44, 0.2], [0.5, 0]],
+		x: 0.13, w: 0.22, h: 0.16, phase: 0,
+	},
+	{
+		outline: [[-0.5, 0], [-0.34, 0.5], [-0.16, 0.3], [0.0, 0.9], [0.2, 0.35], [0.36, 0.55], [0.5, 0]],
+		x: 0.3, w: 0.15, h: 0.11, phase: 2.1,
+	},
+	{
+		outline: [[-0.5, 0], [-0.28, 0.6], [-0.05, 0.25], [0.18, 0.8], [0.38, 0.3], [0.5, 0]],
+		x: 0.43, w: 0.1, h: 0.07, phase: 4.2,
+	},
+] as const;
+
+const WIN_COLS = 24;
+const WIN_ROWS = 5;
+const WIN_COUNT = WIN_COLS * WIN_ROWS;
+const WIN_COLD: RGB = [0.45, 0.66, 0.85];
+const WIN_HOT: RGB = [1.0, 0.45, 0.12];
+
+export default function ProductionScene({ params, reducedMotion }: SceneProps) {
+	const containerRef = useRef<HTMLDivElement | null>(null);
 	const paramsRef = useRef(params);
 	paramsRef.current = params;
+	const renderOnceRef = useRef<(() => void) | null>(null);
 
 	useEffect(() => {
-		const root = rootRef.current;
-		const canvas = canvasRef.current;
-		if (!root || !canvas) return;
-		const ctx = canvas.getContext('2d');
-		if (!ctx) return;
+		const container = containerRef.current;
+		if (!container) return;
 
-		let w = 1;
-		let h = 1;
-		const dpr = Math.min(2, window.devicePixelRatio || 1);
+		const renderer = new THREE.WebGLRenderer({ antialias: true });
+		renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+		const canvas = renderer.domElement;
+		canvas.style.width = '100%';
+		canvas.style.height = '100%';
+		canvas.style.display = 'block';
+		container.appendChild(canvas);
+
+		const scene = new THREE.Scene();
+		const camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 10);
+		camera.position.z = 2;
+
+		const quadGeo = new THREE.PlaneGeometry(1, 1);
+
+		// --- Sky / sun / shimmer / background fog (fullscreen shader quad) ---
+		const skyMat = new THREE.ShaderMaterial({
+			uniforms: {
+				uTop: { value: new THREE.Vector3() },
+				uHorizon: { value: new THREE.Vector3() },
+				uLow: { value: new THREE.Vector3() },
+				uSunColor: { value: new THREE.Vector3() },
+				uSunPos: { value: new THREE.Vector2(0.7, HORIZON) },
+				uSunIntensity: { value: 0 },
+				uShimmer: { value: 0 },
+				uFog: { value: 0 },
+				uTime: { value: 0 },
+				uAspect: { value: 16 / 9 },
+				uWind: { value: 0 },
+				uU: { value: 0.5 },
+			},
+			vertexShader: QUAD_VERT,
+			fragmentShader: SKY_FRAG,
+			depthWrite: true,
+		});
+		const sky = new THREE.Mesh(quadGeo, skyMat);
+		sky.position.set(0.5, 0.5, -3);
+		scene.add(sky);
+
+		// --- Icebergs (left half of the sea) ---
+		const bergRefs = BERGS.map((b) => {
+			const geo = bergGeometry(b.outline);
+			const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false });
+			const reflMat = new THREE.MeshBasicMaterial({
+				vertexColors: true,
+				transparent: true,
+				depthWrite: false,
+				color: new THREE.Color(0.4, 0.5, 0.65),
+			});
+			const group = new THREE.Group();
+			const top = new THREE.Mesh(geo, mat);
+			const refl = new THREE.Mesh(geo, reflMat);
+			refl.scale.set(1, -0.35, 1);
+			group.add(top, refl);
+			group.position.set(b.x, HORIZON, -2.4);
+			scene.add(group);
+			return { ...b, group, mat, reflMat };
+		});
+
+		// --- Datacenter (right side) ---
+		const bodyMat = new THREE.MeshBasicMaterial({ color: 0x0a0e16 });
+		const body = new THREE.Mesh(quadGeo, bodyMat);
+		body.scale.set(0.41, 0.085, 1);
+		body.position.set(0.765, HORIZON + 0.0425, -2.2);
+		const annexMat = new THREE.MeshBasicMaterial({ color: 0x070a10 });
+		const annex = new THREE.Mesh(quadGeo, annexMat);
+		annex.scale.set(0.07, 0.055, 1);
+		annex.position.set(0.535, HORIZON + 0.0275, -2.21);
+		const stackA = new THREE.Mesh(quadGeo, annexMat);
+		stackA.scale.set(0.02, 0.04, 1);
+		stackA.position.set(0.64, HORIZON + 0.105, -2.21);
+		const stackB = new THREE.Mesh(quadGeo, annexMat);
+		stackB.scale.set(0.02, 0.04, 1);
+		stackB.position.set(0.88, HORIZON + 0.105, -2.21);
+		scene.add(body, annex, stackA, stackB);
+
+		const winGeo = new THREE.PlaneGeometry(0.0095, 0.0085);
+		const winMat = new THREE.MeshBasicMaterial();
+		const wins = new THREE.InstancedMesh(winGeo, winMat, WIN_COUNT);
+		const winPhase = new Float32Array(WIN_COUNT);
+		const winVar = new Float32Array(WIN_COUNT);
+		{
+			const m = new THREE.Matrix4();
+			const col = new THREE.Color(0.1, 0.1, 0.1);
+			for (let i = 0; i < WIN_COUNT; i++) {
+				const cx = 0.585 + (i % WIN_COLS) * ((0.945 - 0.585) / (WIN_COLS - 1));
+				const cy = HORIZON + 0.016 + Math.floor(i / WIN_COLS) * (0.056 / (WIN_ROWS - 1));
+				m.makeTranslation(cx, cy, 0);
+				wins.setMatrixAt(i, m);
+				wins.setColorAt(i, col);
+				winPhase[i] = Math.random() * Math.PI * 2;
+				winVar[i] = 0.55 + 0.45 * Math.random();
+			}
+			wins.instanceMatrix.needsUpdate = true;
+		}
+		wins.position.set(0, 0, -2.19);
+		scene.add(wins);
+
+		const frostMat = new THREE.ShaderMaterial({
+			uniforms: { uFrost: { value: 0 } },
+			vertexShader: QUAD_VERT,
+			fragmentShader: FROST_FRAG,
+			transparent: true,
+			depthWrite: false,
+		});
+		const frost = new THREE.Mesh(quadGeo, frostMat);
+		frost.scale.set(0.43, 0.024, 1);
+		frost.position.set(0.765, HORIZON + 0.085, -2.18);
+		scene.add(frost);
+
+		const glowMat = new THREE.ShaderMaterial({
+			uniforms: { uGlow: { value: 0 } },
+			vertexShader: QUAD_VERT,
+			fragmentShader: GLOW_FRAG,
+			transparent: true,
+			depthWrite: false,
+			blending: THREE.AdditiveBlending,
+		});
+		const glow = new THREE.Mesh(quadGeo, glowMat);
+		glow.scale.set(0.6, 0.4, 1);
+		glow.position.set(0.78, HORIZON + 0.09, -2.1);
+		scene.add(glow);
+
+		// --- Foreground fog (in front of props) ---
+		const fogMat = new THREE.ShaderMaterial({
+			uniforms: {
+				uFog: { value: 0 },
+				uTime: { value: 0 },
+				uWind: { value: 0 },
+				uHorizonC: { value: new THREE.Vector3() },
+			},
+			vertexShader: QUAD_VERT,
+			fragmentShader: FOG_FRAG,
+			transparent: true,
+			depthWrite: false,
+		});
+		const fog = new THREE.Mesh(quadGeo, fogMat);
+		fog.position.set(0.5, 0.5, -1.8);
+		scene.add(fog);
+
+		// --- Particles (skipped entirely under reduced motion) ---
+		// Order matches the packed density slots 15–18 (snow, rain, tokens, embers).
+		const particleMats: THREE.ShaderMaterial[] = [];
+		let atlas: THREE.CanvasTexture | null = null;
+		if (!reducedMotion) {
+			atlas = makeGlyphAtlas();
+			const snow = makePoints(SNOW_MAX, SNOW_VERT, SNOW_FRAG, THREE.NormalBlending);
+			snow.position.z = -1.2;
+			const rain = makePoints(RAIN_MAX, RAIN_VERT, RAIN_FRAG, THREE.NormalBlending);
+			rain.position.z = -1.2;
+			const tokens = makePoints(TOKEN_MAX, TOKEN_VERT, TOKEN_FRAG, THREE.AdditiveBlending, { uAtlas: { value: atlas } }, true);
+			tokens.position.z = -1.1;
+			const embers = makePoints(EMBER_MAX, EMBER_VERT, EMBER_FRAG, THREE.AdditiveBlending);
+			embers.position.z = -1.0;
+			scene.add(snow, rain, tokens, embers);
+			for (const p of [snow, rain, tokens, embers]) particleMats.push(p.material as THREE.ShaderMaterial);
+		}
+
+		// --- Param smoothing + per-frame application ---
+		const target = new Float32Array(PACK_LEN);
+		const cur = new Float32Array(PACK_LEN);
+		packParams(paramsRef.current, cur);
+		let areaScale = 1;
+		const tmpColor = new THREE.Color();
+
+		const apply = (time: number, k: number) => {
+			packParams(paramsRef.current, target);
+			for (let i = 0; i < PACK_LEN; i++) cur[i] += (target[i] - cur[i]) * k;
+
+			const su = skyMat.uniforms;
+			(su.uTop.value as THREE.Vector3).set(cur[0], cur[1], cur[2]);
+			(su.uHorizon.value as THREE.Vector3).set(cur[3], cur[4], cur[5]);
+			(su.uLow.value as THREE.Vector3).set(cur[6], cur[7], cur[8]);
+			(su.uSunColor.value as THREE.Vector3).set(cur[9], cur[10], cur[11]);
+			(su.uSunPos.value as THREE.Vector2).set(0.7, HORIZON + cur[12] * 0.54);
+			su.uSunIntensity.value = cur[13];
+			su.uWind.value = cur[14];
+			su.uShimmer.value = cur[19];
+			su.uFog.value = cur[20];
+			su.uU.value = cur[24];
+			su.uTime.value = time;
+
+			const fu = fogMat.uniforms;
+			fu.uFog.value = cur[20];
+			fu.uWind.value = cur[14];
+			fu.uTime.value = time;
+			(fu.uHorizonC.value as THREE.Vector3).set(cur[3], cur[4], cur[5]);
+
+			const ice = cur[21];
+			for (const b of bergRefs) {
+				const s = 0.3 + 0.7 * ice;
+				b.group.scale.set(b.w * s, b.h * s, 1);
+				b.group.position.y = HORIZON + Math.sin(time * 0.4 + b.phase) * 0.006 * ice;
+				b.mat.opacity = 0.96 * ice;
+				b.reflMat.opacity = 0.28 * ice;
+			}
+
+			const frostV = cur[22];
+			const glowV = cur[23];
+			frostMat.uniforms.uFrost.value = frostV;
+			glowMat.uniforms.uGlow.value = glowV * (1 + 0.1 * glowV * Math.sin(time * 2.2));
+			bodyMat.color.setRGB(0.04 + 0.05 * frostV + 0.2 * glowV, 0.055 + 0.07 * frostV + 0.07 * glowV, 0.09 + 0.1 * frostV + 0.03 * glowV);
+			annexMat.color.setRGB(0.03 + 0.04 * frostV + 0.12 * glowV, 0.04 + 0.05 * frostV + 0.045 * glowV, 0.065 + 0.075 * frostV + 0.02 * glowV);
+
+			const mixT = Math.min(1, glowV * 0.85 + (1 - frostV) * 0.35);
+			const bright = 0.5 + 0.8 * mixT;
+			for (let i = 0; i < WIN_COUNT; i++) {
+				const pulse = 1 + 0.2 * glowV * Math.sin(time * 2.7 + winPhase[i]);
+				const b = winVar[i] * bright * pulse;
+				tmpColor.setRGB(
+					(WIN_COLD[0] + (WIN_HOT[0] - WIN_COLD[0]) * mixT) * b,
+					(WIN_COLD[1] + (WIN_HOT[1] - WIN_COLD[1]) * mixT) * b,
+					(WIN_COLD[2] + (WIN_HOT[2] - WIN_COLD[2]) * mixT) * b,
+				);
+				wins.setColorAt(i, tmpColor);
+			}
+			if (wins.instanceColor) wins.instanceColor.needsUpdate = true;
+
+			for (let i = 0; i < particleMats.length; i++) {
+				const mat = particleMats[i];
+				mat.uniforms.uTime.value = time;
+				mat.uniforms.uWind.value = cur[14];
+				mat.uniforms.uDensity.value = cur[15 + i] * areaScale;
+			}
+		};
+
+		// --- Sizing ---
 		const resize = () => {
-			w = Math.max(1, root.clientWidth);
-			h = Math.max(1, root.clientHeight);
-			canvas.width = Math.round(w * dpr);
-			canvas.height = Math.round(h * dpr);
-			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-		};
-		resize();
-		const ro = new ResizeObserver(resize);
-		ro.observe(root);
-
-		if (reducedMotion) {
-			ctx.clearRect(0, 0, w, h);
-			return () => ro.disconnect();
-		}
-
-		if (!poolsRef.current) {
-			const rand = mulberry32(0x5eed);
-			poolsRef.current = {
-				snow: makePool(SNOW_MAX, rand),
-				rain: makePool(RAIN_MAX, rand),
-				tokens: makePool(TOKEN_MAX, rand),
-				embers: makePool(EMBER_MAX, rand),
-			};
-		}
-		const pools = poolsRef.current;
-		const sprites = makeGlyphSprites();
-
-		// Offscreen gradient strip re-tinted from params each frame, sliced for the shimmer.
-		const strip = document.createElement('canvas');
-		strip.width = 64;
-		strip.height = 64;
-		const stripCtx = strip.getContext('2d');
-
-		let fogPhaseA = 0;
-		let fogPhaseB = 0;
-
-		const fadeStep = (pt: Particle, active: boolean, dt: number) => {
-			pt.fade += ((active ? 1 : 0) - pt.fade) * Math.min(1, dt * 2.5);
-		};
-
-		const drawShimmer = (p: SceneParams, t: number) => {
-			if (p.shimmer < 0.004 || !stripCtx) return;
-			const grad = stripCtx.createLinearGradient(0, 0, 0, 64);
-			grad.addColorStop(0, rgba(p.sky.horizon, 0));
-			grad.addColorStop(0.45, rgba(p.sky.horizon, 0.9));
-			grad.addColorStop(1, rgba(p.sky.low, 0));
-			stripCtx.clearRect(0, 0, 64, 64);
-			stripCtx.fillStyle = grad;
-			stripCtx.fillRect(0, 0, 64, 64);
-
-			ctx.save();
-			ctx.globalCompositeOperation = 'lighter';
-			const slices = 9;
-			const sliceH = 7;
-			const baseY = h * HORIZON - 18;
-			for (let i = 0; i < slices; i++) {
-				const amp = (2 + 10 * (i / slices)) * p.shimmer;
-				const off = Math.sin(t * (1.9 + 0.17 * i) + i * 1.31) * amp;
-				ctx.globalAlpha = p.shimmer * 0.16 * (1 - Math.abs(i - slices * 0.45) / (slices * 0.75));
-				ctx.drawImage(strip, 0, (i / slices) * 64, 64, 64 / slices, off - 16, baseY + i * sliceH, w + 32, sliceH);
+			const w = container.clientWidth || 1;
+			const h = container.clientHeight || 1;
+			renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+			renderer.setSize(w, h, false);
+			areaScale = Math.min(1, (w * h) / (1440 * 900));
+			skyMat.uniforms.uAspect.value = w / h;
+			const pr = renderer.getPixelRatio();
+			const hScale = Math.min(1.6, Math.max(0.6, h / 900));
+			for (const mat of particleMats) {
+				mat.uniforms.uPixelRatio.value = pr;
+				mat.uniforms.uHScale.value = hScale;
 			}
-			ctx.restore();
+			renderOnceRef.current?.();
 		};
 
-		const drawSnow = (p: SceneParams, t: number, dt: number, area: number) => {
-			const target = Math.round(SNOW_MAX * area * p.particles.snow);
-			ctx.fillStyle = '#eef6ff';
-			for (let i = 0; i < pools.snow.length; i++) {
-				const pt = pools.snow[i];
-				pt.y += ((32 + 52 * pt.seed) / h) * dt;
-				pt.x += ((p.wind * 72 * (0.4 + 0.6 * pt.seed) + Math.sin(t * 1.3 + pt.phase) * 14) / w) * dt;
-				if (pt.y > 1.02) pt.y -= 1.04;
-				if (pt.x > 1.02) pt.x -= 1.04;
-				else if (pt.x < -0.02) pt.x += 1.04;
-				fadeStep(pt, i < target, dt);
-				if (pt.fade < 0.02) continue;
-				ctx.globalAlpha = pt.fade * (0.45 + 0.5 * pt.seed);
-				ctx.beginPath();
-				ctx.arc(pt.x * w, pt.y * h, 0.9 + 2.1 * pt.seed, 0, TAU);
-				ctx.fill();
-			}
-			ctx.globalAlpha = 1;
-		};
-
-		const drawRain = (p: SceneParams, dt: number, area: number) => {
-			const target = Math.round(RAIN_MAX * area * p.particles.rain);
-			ctx.strokeStyle = 'rgb(186, 208, 238)';
-			ctx.lineWidth = 1;
-			for (let i = 0; i < pools.rain.length; i++) {
-				const pt = pools.rain[i];
-				pt.y += ((520 + 340 * pt.seed) / h) * dt;
-				pt.x += ((p.wind * 130) / w) * dt;
-				if (pt.y > 1.03) {
-					pt.y -= 1.06;
-					pt.x = Math.random();
-				}
-				if (pt.x > 1.02) pt.x -= 1.04;
-				fadeStep(pt, i < target, dt);
-				if (pt.fade < 0.02) continue;
-				const len = 10 + 10 * pt.seed;
-				const slant = p.wind * 0.45 * len;
-				const x = pt.x * w;
-				const y = pt.y * h;
-				ctx.globalAlpha = pt.fade * (0.28 + 0.3 * pt.seed);
-				ctx.beginPath();
-				ctx.moveTo(x, y);
-				ctx.lineTo(x - slant, y - len);
-				ctx.stroke();
-			}
-			ctx.globalAlpha = 1;
-		};
-
-		const drawTokens = (p: SceneParams, t: number, dt: number, area: number) => {
-			const target = Math.round(TOKEN_MAX * area * p.particles.tokens);
-			ctx.save();
-			ctx.globalCompositeOperation = 'lighter';
-			for (let i = 0; i < pools.tokens.length; i++) {
-				const pt = pools.tokens[i];
-				pt.y += ((72 + 112 * pt.seed) / h) * dt;
-				pt.x += ((Math.sin(t * 0.8 + pt.phase) * 9 + p.wind * 28) / w) * dt;
-				if (pt.y > 1.04) {
-					pt.y -= 1.1;
-					pt.x = Math.random();
-					pt.g = Math.floor(Math.random() * GLYPHS.length);
-				}
-				if (pt.x > 1.02) pt.x -= 1.04;
-				else if (pt.x < -0.02) pt.x += 1.04;
-				fadeStep(pt, i < target, dt);
-				if (pt.fade < 0.02) continue;
-				const spr = sprites[pt.g % sprites.length];
-				const s = 0.55 + 0.6 * pt.seed;
-				const dw = spr.w * s;
-				const dh = spr.h * s;
-				const x = pt.x * w - dw / 2;
-				const y = pt.y * h - dh / 2;
-				const flicker = 0.72 + 0.28 * Math.sin(t * 4.2 + pt.phase);
-				const a = pt.fade * flicker * (0.5 + 0.5 * pt.seed);
-				ctx.globalAlpha = a * 0.3;
-				ctx.drawImage(spr.c, x, y - dh * 0.55, dw, dh);
-				ctx.globalAlpha = a;
-				ctx.drawImage(spr.c, x, y, dw, dh);
-			}
-			ctx.restore();
-		};
-
-		const drawEmbers = (p: SceneParams, t: number, dt: number, area: number) => {
-			const target = Math.round(EMBER_MAX * area * p.particles.embers);
-			ctx.save();
-			ctx.globalCompositeOperation = 'lighter';
-			for (let i = 0; i < pools.embers.length; i++) {
-				const pt = pools.embers[i];
-				pt.life -= dt * (0.3 + 0.35 * pt.seed);
-				if (pt.life <= 0) {
-					// Re-spawn at the datacenter (right side, near the rack hall).
-					pt.life = 1;
-					pt.x = 0.58 + 0.38 * Math.random();
-					pt.y = 0.64 + 0.18 * Math.random();
-					pt.phase = Math.random() * TAU;
-				}
-				pt.y -= ((46 + 92 * pt.seed) / h) * dt;
-				pt.x += ((Math.sin(t * 2.4 + pt.phase) * 16 + p.wind * 22) / w) * dt;
-				fadeStep(pt, i < target, dt);
-				if (pt.fade < 0.02) continue;
-				const x = pt.x * w;
-				const y = pt.y * h;
-				const a = pt.fade * pt.life * 0.9;
-				ctx.globalAlpha = a;
-				ctx.fillStyle = 'rgb(255, 158, 66)';
-				ctx.beginPath();
-				ctx.arc(x, y, 0.8 + 1.7 * pt.seed, 0, TAU);
-				ctx.fill();
-				ctx.globalAlpha = a * 0.7;
-				ctx.fillStyle = 'rgb(255, 226, 170)';
-				ctx.beginPath();
-				ctx.arc(x, y, 0.4 + 0.7 * pt.seed, 0, TAU);
-				ctx.fill();
-			}
-			ctx.restore();
-		};
-
-		let raf = 0;
+		// --- Render loop / static render ---
 		let last = performance.now();
-		const loop = (now: number) => {
-			raf = requestAnimationFrame(loop);
-			const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
-			last = now;
-			const t = now / 1000;
-			const p = paramsRef.current;
-			const area = Math.min(1, (w * h) / (1440 * 900));
+		let elapsed = 0;
+		if (reducedMotion) {
+			renderOnceRef.current = () => {
+				apply(0, 1);
+				renderer.render(scene, camera);
+			};
+		} else {
+			renderer.setAnimationLoop((now: number) => {
+				const dt = Math.min((now - last) / 1000, 0.1);
+				last = now;
+				elapsed += dt;
+				apply(elapsed, 1 - Math.exp(-dt * 8));
+				renderer.render(scene, camera);
+			});
+		}
 
-			// Wind-driven fog drift (two layers at different speeds for parallax).
-			fogPhaseA += (8 + 36 * p.wind) * dt;
-			fogPhaseB += (16 + 62 * p.wind) * dt;
-			if (fogARef.current) fogARef.current.style.backgroundPositionX = `${(-fogPhaseA).toFixed(2)}px`;
-			if (fogBRef.current) fogBRef.current.style.backgroundPositionX = `${(-fogPhaseB).toFixed(2)}px`;
+		resize();
+		renderOnceRef.current?.();
+		const ro = new ResizeObserver(resize);
+		ro.observe(container);
 
-			ctx.clearRect(0, 0, w, h);
-			drawShimmer(p, t);
-			drawSnow(p, t, dt, area);
-			drawRain(p, dt, area);
-			drawTokens(p, t, dt, area);
-			drawEmbers(p, t, dt, area);
-		};
-		raf = requestAnimationFrame(loop);
+		const onContextLost = (e: Event) => e.preventDefault();
+		const onContextRestored = () => renderOnceRef.current?.();
+		canvas.addEventListener('webglcontextlost', onContextLost);
+		canvas.addEventListener('webglcontextrestored', onContextRestored);
 
 		return () => {
-			cancelAnimationFrame(raf);
+			renderOnceRef.current = null;
+			renderer.setAnimationLoop(null);
 			ro.disconnect();
+			canvas.removeEventListener('webglcontextlost', onContextLost);
+			canvas.removeEventListener('webglcontextrestored', onContextRestored);
+			scene.traverse((o) => {
+				if (o instanceof THREE.Mesh || o instanceof THREE.Points) {
+					o.geometry.dispose();
+					const mats = Array.isArray(o.material) ? o.material : [o.material];
+					for (const m of mats) m.dispose();
+				}
+			});
+			wins.dispose();
+			atlas?.dispose();
+			renderer.dispose();
+			// Release the GL context now; A/B route toggling in the spike would
+			// otherwise stack live contexts until GC (browsers cap ~16).
+			renderer.forceContextLoss();
+			container.removeChild(canvas);
 		};
 	}, [reducedMotion]);
 
-	const stars = useMemo(() => {
-		const rand = mulberry32(1234);
-		const dots: string[] = [];
-		for (let i = 0; i < 90; i++) {
-			dots.push(
-				`${(rand() * 100).toFixed(1)}vw ${(rand() * 56).toFixed(1)}vh 0 ${rand() > 0.78 ? 1 : 0}px rgba(255,255,255,${(0.3 + 0.6 * rand()).toFixed(2)})`,
-			);
-		}
-		return dots.join(', ');
-	}, []);
+	// Reduced motion has no loop, so re-render statically whenever params change.
+	useEffect(() => {
+		renderOnceRef.current?.();
+	}, [params]);
 
-	const wins = useMemo(() => {
-		const list: { x: number; y: number; w: number; h: number }[] = [];
-		for (let r = 0; r < 4; r++)
-			for (let c = 0; c < 11; c++) list.push({ x: 28 + c * 26, y: 84 + r * 18, w: 18, h: 9 });
-		for (let r = 0; r < 6; r++)
-			for (let c = 0; c < 3; c++) list.push({ x: 328 + c * 27, y: 52 + r * 18, w: 16, h: 9 });
-		return list;
-	}, []);
-
-	const icicles = useMemo(() => {
-		const main = [34, 64, 102, 146, 190, 238, 282, 306].map(
-			(x, i) => `M ${x} 73 h 5 l -2.5 ${8 + ((i * 7) % 9)} z`,
-		);
-		const side = [322, 352, 386].map((x, i) => `M ${x} 43 h 5 l -2.5 ${7 + ((i * 5) % 8)} z`);
-		return [...main, ...side];
-	}, []);
-
-	const { sky, sun } = params;
-	const anim = (a: string): string => (reducedMotion ? 'none' : a);
-
-	const sunTopPct = (0.6 - 0.5 * sun.elevation) * 100;
-	const haloSize = 24 + 32 * sun.intensity;
-	const coreSize = 6.5 + 4.5 * sun.intensity;
-	const sunCore = mixRGB(sun.color, [255, 255, 255], 0.4);
-
-	const seaTop = mixRGB(sky.horizon, sky.low, 0.45);
-	const seaBot = mixRGB(sky.low, [0, 0, 0], 0.55);
-
-	const heat = clamp01(0.35 * (1 - params.frost) + 0.65 * params.rackGlow);
-	const windowFill = cssRGB(mixRGB([168, 208, 236], [255, 148, 44], heat));
-	const bldgFill = cssRGB(mixRGB(sky.low, [0, 0, 0], 0.62));
-	const roofFill = cssRGB(mixRGB(sky.low, [0, 0, 0], 0.76));
-
-	const fogTint = mixRGB(sky.horizon, [255, 255, 255], 0.5);
-	const fogImg = (a: number) =>
-		`radial-gradient(closest-side at 18% 55%, ${rgba(fogTint, a)}, transparent), ` +
-		`radial-gradient(closest-side at 50% 38%, ${rgba(fogTint, a * 0.8)}, transparent), ` +
-		`radial-gradient(closest-side at 82% 62%, ${rgba(fogTint, a * 0.9)}, transparent)`;
-
-	const bergScale = 0.4 + 0.6 * params.iceberg;
-	const layer: CSSProperties = { position: 'absolute', inset: 0 };
-
-	return (
-		<div ref={rootRef} style={{ ...layer, overflow: 'hidden', background: '#000' }}>
-			<style>{KEYFRAMES}</style>
-
-			{/* Sky */}
-			<div
-				style={{
-					...layer,
-					background: `linear-gradient(180deg, ${cssRGB(sky.top)} 0%, ${cssRGB(sky.horizon)} 62%, ${cssRGB(sky.low)} 100%)`,
-				}}
-			/>
-
-			{/* Stars — fade out as the sun gains intensity */}
-			<div
-				style={{
-					position: 'absolute',
-					top: 0,
-					left: 0,
-					width: 2,
-					height: 2,
-					borderRadius: '50%',
-					boxShadow: stars,
-					opacity: (1 - sun.intensity) * 0.9,
-				}}
-			/>
-
-			{/* Aurora — cold-end flourish, melts away with the frost */}
-			<div
-				style={{
-					position: 'absolute',
-					top: '4%',
-					left: '3%',
-					width: '54%',
-					height: '36%',
-					background:
-						'linear-gradient(100deg, transparent 8%, rgba(80, 255, 190, 0.22) 32%, rgba(110, 170, 255, 0.18) 58%, transparent 84%)',
-					filter: 'blur(14px)',
-					transform: 'skewX(-13deg)',
-					opacity: params.frost * (1 - sun.intensity) * 0.7,
-					animation: anim('raAurora 11s ease-in-out infinite'),
-				}}
-			/>
-
-			{/* Sun halo + core */}
-			<div
-				style={{
-					position: 'absolute',
-					left: '70%',
-					top: `${sunTopPct}%`,
-					width: `${haloSize}vmin`,
-					height: `${haloSize}vmin`,
-					transform: 'translate(-50%, -50%)',
-					borderRadius: '50%',
-					background: `radial-gradient(circle, ${rgba(sun.color, 0.5 * sun.intensity + 0.08)} 0%, ${rgba(sun.color, 0.16 * sun.intensity)} 40%, transparent 70%)`,
-				}}
-			/>
-			<div
-				style={{
-					position: 'absolute',
-					left: '70%',
-					top: `${sunTopPct}%`,
-					width: `${coreSize}vmin`,
-					height: `${coreSize}vmin`,
-					transform: 'translate(-50%, -50%)',
-					borderRadius: '50%',
-					background: cssRGB(sunCore),
-					boxShadow: `0 0 ${24 + 56 * sun.intensity}px ${4 + 12 * sun.intensity}px ${rgba(sun.color, 0.35 + 0.5 * sun.intensity)}`,
-				}}
-			/>
-
-			{/* Sea / ground plane */}
-			<div
-				style={{
-					position: 'absolute',
-					top: '62%',
-					left: 0,
-					right: 0,
-					bottom: 0,
-					background: `linear-gradient(180deg, ${cssRGB(seaTop)} 0%, ${cssRGB(seaBot)} 100%)`,
-				}}
-			/>
-			<div
-				style={{
-					position: 'absolute',
-					top: 'calc(62% - 1px)',
-					left: 0,
-					right: 0,
-					height: 2,
-					background: rgba(sky.horizon, 0.5),
-					filter: 'blur(1px)',
-				}}
-			/>
-
-			{/* Sun reflection column on the water */}
-			<div
-				style={{
-					position: 'absolute',
-					left: '70%',
-					top: '62%',
-					width: '7%',
-					height: '25%',
-					transform: 'translateX(-50%)',
-					background: `linear-gradient(180deg, ${rgba(sun.color, 0.5)}, transparent)`,
-					filter: 'blur(5px)',
-					opacity: sun.intensity * 0.8,
-				}}
-			/>
-
-			{/* Icebergs (left) — scale + opacity melt with params.iceberg */}
-			<div
-				style={{
-					position: 'absolute',
-					left: '-1%',
-					top: '42%',
-					width: '58%',
-					height: '30%',
-					animation: anim('raBob 7.5s ease-in-out infinite'),
-				}}
-			>
-				<svg width="100%" height="100%" viewBox="0 0 600 220" preserveAspectRatio="none" aria-hidden="true">
-					<defs>
-						<linearGradient id="ra-berg" x1="0" y1="0" x2="0" y2="1">
-							<stop offset="0" stopColor="#eaf7ff" />
-							<stop offset="1" stopColor="#85b8da" />
-						</linearGradient>
-					</defs>
-					{/* Distant ice shelf (does not scale — far away, just fades) */}
-					<polygon
-						points="0,150 70,128 150,142 230,122 330,140 440,132 600,144 600,150"
-						fill="rgba(196, 228, 246, 0.4)"
-						opacity={0.55 * params.iceberg}
-					/>
-					<g
-						opacity={params.iceberg}
-						transform={`translate(260 150) scale(${bergScale.toFixed(4)}) translate(-260 -150)`}
-					>
-						<polygon points="52,150 178,150 150,188 86,182" fill="rgba(150, 200, 230, 0.16)" />
-						<polygon points="250,150 350,150 322,178 276,174" fill="rgba(150, 200, 230, 0.13)" />
-						<polygon points="30,150 58,72 84,98 112,40 138,92 168,64 196,150" fill="url(#ra-berg)" />
-						<polygon points="232,150 262,96 288,116 316,78 344,118 362,150" fill="url(#ra-berg)" opacity={0.9} />
-						<polygon points="430,150 452,116 470,128 492,150" fill="url(#ra-berg)" opacity={0.65} />
-					</g>
-				</svg>
-			</div>
-
-			{/* Datacenter heat glow (amplitude ∝ rackGlow, inner layer pulses) */}
-			<div style={{ position: 'absolute', right: 0, top: '42%', width: '56%', height: '52%', opacity: params.rackGlow * 0.65 }}>
-				<div
-					style={{
-						...layer,
-						background: 'radial-gradient(ellipse at 62% 64%, rgba(255, 118, 36, 0.55) 0%, transparent 65%)',
-						animation: anim('raPulse 2.7s ease-in-out infinite'),
-					}}
-				/>
-			</div>
-
-			{/* Datacenter campus (right) */}
-			<div style={{ position: 'absolute', right: '1%', top: '46%', width: '46%', height: '42%' }}>
-				<svg width="100%" height="100%" viewBox="0 0 420 170" preserveAspectRatio="xMaxYMax meet" aria-hidden="true">
-					<rect x={14} y={72} width={302} height={98} fill={bldgFill} />
-					<rect x={10} y={64} width={310} height={9} rx={2} fill={roofFill} />
-					<rect x={318} y={42} width={92} height={128} fill={bldgFill} />
-					<rect x={314} y={34} width={100} height={9} rx={2} fill={roofFill} />
-					<rect x={44} y={54} width={26} height={11} fill={roofFill} />
-					<rect x={96} y={54} width={26} height={11} fill={roofFill} />
-					<rect x={148} y={54} width={26} height={11} fill={roofFill} />
-					<rect x={152} y={144} width={22} height={26} fill={roofFill} />
-					<line x1={364} y1={34} x2={364} y2={8} stroke={roofFill} strokeWidth={2.5} />
-					<circle cx={364} cy={7} r={3} fill="#ff6a55" style={{ animation: anim('raBeacon 2.4s ease-in-out infinite') }} />
-
-					{/* Rack windows: frosty pale blue → hot orange (continuous blend) */}
-					<g>
-						{wins.map((wn, i) => (
-							<rect key={i} x={wn.x} y={wn.y} width={wn.w} height={wn.h} rx={1.5} fill={windowFill} />
-						))}
-					</g>
-					{/* Hot overlay: pulse amplitude scales continuously with rackGlow */}
-					<g opacity={params.rackGlow}>
-						<g style={{ animation: anim('raPulse 2.7s ease-in-out infinite') }}>
-							{wins.map((wn, i) => (
-								<rect key={i} x={wn.x} y={wn.y} width={wn.w} height={wn.h} rx={1.5} fill="rgb(255, 156, 56)" />
-							))}
-						</g>
-					</g>
-
-					{/* Frost cap + icicles on the roofline */}
-					<g opacity={params.frost}>
-						<rect x={10} y={60} width={310} height={7} rx={3.5} fill="rgba(228, 244, 255, 0.9)" />
-						<rect x={314} y={30} width={100} height={7} rx={3.5} fill="rgba(228, 244, 255, 0.9)" />
-						<g transform={`translate(0 73) scale(1 ${(0.15 + 0.85 * params.frost).toFixed(4)}) translate(0 -73)`}>
-							{icicles.map((d, i) => (
-								<path key={i} d={d} fill="rgba(225, 243, 255, 0.85)" />
-							))}
-						</g>
-					</g>
-				</svg>
-			</div>
-
-			{/* Fog: two drifting layers hugging the horizon (speed ∝ wind via rAF) */}
-			<div
-				ref={fogARef}
-				style={{
-					position: 'absolute',
-					top: '52%',
-					left: 0,
-					right: 0,
-					height: '17%',
-					backgroundImage: fogImg(0.5),
-					backgroundSize: '860px 100%',
-					backgroundRepeat: 'repeat-x',
-					opacity: params.fog * 0.85,
-				}}
-			/>
-			<div
-				ref={fogBRef}
-				style={{
-					position: 'absolute',
-					top: '57%',
-					left: 0,
-					right: 0,
-					height: '11%',
-					backgroundImage: fogImg(0.45),
-					backgroundSize: '520px 100%',
-					backgroundRepeat: 'repeat-x',
-					opacity: params.fog * 0.7,
-				}}
-			/>
-
-			{/* One canvas: all particles + heat shimmer */}
-			<canvas ref={canvasRef} style={{ ...layer, width: '100%', height: '100%', pointerEvents: 'none' }} />
-
-			{/* Vignette */}
-			<div
-				style={{
-					...layer,
-					pointerEvents: 'none',
-					background: 'radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(0, 0, 0, 0.45) 100%)',
-				}}
-			/>
-		</div>
-	);
+	return <div ref={containerRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }} />;
 }
