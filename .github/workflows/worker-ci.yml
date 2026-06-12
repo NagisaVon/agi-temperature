@@ -5,6 +5,11 @@ on:
     paths:
       - "agi-temperature-worker/**"
       - ".github/workflows/worker-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "agi-temperature-worker/**"
+      - ".github/workflows/worker-ci.yml"
 
 defaults:
   run:
@@ -29,3 +34,17 @@ jobs:
 
       - name: Unit tests (Miniflare + Vitest)
         run: npm test
+
+  deploy:
+    # D14: deploys happen from CI on push to main, never from laptops.
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: agi-temperature-worker

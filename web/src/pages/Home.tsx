@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import Records from '../components/Records';
+import Thermometer from '../components/Thermometer';
 import TrendChart from '../components/TrendChart';
 import { formatTemp, formatWhen } from '../format';
 import { NO_DATA_NOTE, bandFor } from '../taglines';
@@ -41,7 +42,10 @@ export default function Home({ current }: { current: CurrentState }) {
 	return (
 		<>
 			<section className="reading">
-				<h1 className="reading-temp">{formatTemp(data.temperature_c, unit)}</h1>
+				<div className="reading-row">
+					<Thermometer tempC={data.temperature_c} />
+					<h1 className="reading-temp">{formatTemp(data.temperature_c, unit)}</h1>
+				</div>
 				<p className="reading-tagline">{band.tagline}</p>
 				<p className="reading-advisory">{band.advisory}</p>
 				<p className="reading-meta">
