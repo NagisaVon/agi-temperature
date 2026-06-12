@@ -115,21 +115,21 @@ export default function TrendChart() {
 									borderRadius: 8,
 									color: 'var(--fg)',
 								}}
-								labelFormatter={(t: number) =>
-									new Date(t * 1000).toLocaleString(undefined, {
+								labelFormatter={(t) =>
+									new Date(Number(t) * 1000).toLocaleString(undefined, {
 										month: 'short',
 										day: 'numeric',
 										hour: 'numeric',
 										minute: '2-digit',
 									})
 								}
-								formatter={(value: number, _name, item) => {
-									const p = item?.payload as HistoryPoint | undefined;
+								formatter={(value, _name, item) => {
+									const p = (item as { payload?: HistoryPoint }).payload;
 									const spread =
 										p && p.min_c !== p.max_c
 											? ` (${formatTemp(p.min_c, unit, 0)} – ${formatTemp(p.max_c, unit, 0)})`
 											: '';
-									return [`${value.toFixed(1)}°${unit}${spread}`, 'hype'];
+									return [`${Number(value).toFixed(1)}°${unit}${spread}`, 'hype'];
 								}}
 							/>
 							{unit === 'C' && data.some((d) => d.avg_c < 2) && (
