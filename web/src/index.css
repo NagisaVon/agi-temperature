@@ -76,6 +76,18 @@ button {
 	align-items: center;
 	gap: 1rem;
 	font-size: 0.9rem;
+	white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+	.app-header {
+		padding: 0.9rem 1rem;
+	}
+
+	.app-nav {
+		gap: 0.7rem;
+		font-size: 0.84rem;
+	}
 }
 
 .app-nav a {
