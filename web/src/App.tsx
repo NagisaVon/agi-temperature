@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import { NavLink, Route, Routes } from 'react-router-dom';
+import { bandFor } from './taglines';
 import { useUnit } from './unit';
 import { useCurrent } from './useCurrent';
 import Home from './pages/Home';
@@ -9,6 +11,15 @@ import Spike from './pages/Spike';
 export default function App() {
 	const { unit, toggle } = useUnit();
 	const current = useCurrent();
+
+	useEffect(() => {
+		if (current.kind === 'ready') {
+			const t = current.data.temperature_c;
+			document.title = `${t.toFixed(1)}°C · ${bandFor(t).tagline} — AGI Temperature`;
+		} else if (current.kind === 'no_data') {
+			document.title = 'AGI Temperature — warming up';
+		}
+	}, [current]);
 
 	return (
 		<div className="app">

@@ -131,11 +131,65 @@ button {
 	color: var(--muted);
 }
 
+/* ---- Scene backdrop ---- */
+
+.scene-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 0;
+}
+
+.scene-scrim {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: linear-gradient(
+		180deg,
+		rgba(11, 16, 32, 0.28) 0%,
+		rgba(11, 16, 32, 0.02) 26%,
+		rgba(11, 16, 32, 0.12) 55%,
+		rgba(11, 16, 32, 0.78) 82%,
+		var(--bg) 100%
+	);
+}
+
 /* ---- Home reading ---- */
+
+.reading,
+.section,
+.loading-state,
+.empty-state {
+	/* Sit above the fixed scene backdrop (z-index 0). */
+	position: relative;
+	z-index: 1;
+}
 
 .reading {
 	text-align: center;
 	padding: 3.5rem 0 1.5rem;
+}
+
+.reading-hero {
+	min-height: 66vh;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	padding: 2rem 0 4rem;
+}
+
+.reading-hero .reading-temp,
+.reading-hero .reading-tagline {
+	text-shadow: 0 2px 28px rgba(4, 8, 18, 0.65);
+}
+
+.reading-hero .reading-advisory,
+.reading-hero .reading-meta {
+	text-shadow: 0 1px 12px rgba(4, 8, 18, 0.8);
+	color: #c4cede;
+}
+
+.reading-hero .reading-meta a {
+	color: #fff;
 }
 
 .reading-row {
