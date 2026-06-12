@@ -1,8 +1,10 @@
 # 008 — Ship & observe (M5)
 
-**Status:** auth unblocked (`wrangler login` done 2026-06-11, account 452739b8…),
-deploy commands pending explicit user go-ahead or manual run. CI still needs the
-`CLOUDFLARE_API_TOKEN` repo secret (instructions given to user).
+**Status:** deployed 2026-06-11 (version 101c3e5d). Cron live and writing:
+first reading 12.6 °C (26/100 AI) ~75 s post-deploy; health 200; edge cache
+HIT verified in prod. Remaining: user adds `CLOUDFLARE_API_TOKEN` repo secret
+(instructions delivered), branch merge so Pages deploys the frontend, optional
+UptimeRobot monitor, γ checkpoint ≈ 2026-06-25.
 
 ## Done already
 - [x] CI: `worker-ci.yml` runs typecheck+tests on PR **and** push to main, then deploys via `cloudflare/wrangler-action@v3` (push only, needs test job)
