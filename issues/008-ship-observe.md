@@ -1,9 +1,8 @@
 # 008 — Ship & observe (M5)
 
-**Status:** blocked on Cloudflare auth (everything else is ready)
-**Blocker:** `wrangler whoami` → not logged in on this machine, and the CI deploy
-job needs a `CLOUDFLARE_API_TOKEN` repo secret. Check-in question was dismissed;
-steps below are ready to run the moment auth exists.
+**Status:** auth unblocked (`wrangler login` done 2026-06-11, account 452739b8…),
+deploy commands pending explicit user go-ahead or manual run. CI still needs the
+`CLOUDFLARE_API_TOKEN` repo secret (instructions given to user).
 
 ## Done already
 - [x] CI: `worker-ci.yml` runs typecheck+tests on PR **and** push to main, then deploys via `cloudflare/wrangler-action@v3` (push only, needs test job)
