@@ -2,6 +2,8 @@
 
 Can you feel the AGI tonight?
 
+https://agi-temperature.pages.dev/
+
 A tiny weather station for AI hype: every 5 minutes a Cloudflare Worker reads
 the Hacker News front page, decides which headlines are feeding the furnace,
 and maps the rank-weighted result onto **−89.2 °C … +56.7 °C** — the coldest
